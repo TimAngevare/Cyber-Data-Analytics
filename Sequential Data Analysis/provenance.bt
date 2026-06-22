@@ -1,0 +1,89 @@
+#!/usr/bin/env bpftrace
+#include <net/tcp_states.h>
+#include <net/sock.h>
+#include <linux/socket.h>
+#include <linux/tcp.h>
+
+tracepoint:syscalls:sys_enter_open,
+tracepoint:syscalls:sys_enter_openat
+{
+	@filename[tid] = args->filename;
+}
+
+// [<datetime>]::<program>[PID=<pid>]::open("<filename>")-><fd>
+tracepoint:syscalls:sys_exit_open,
+tracepoint:syscalls:sys_exit_openat
+/@filename[tid]/
+{
+    if (comm != "bpftrace" && comm != "code"){
+        // Extract file descriptor
+        $ret = args->ret;
+        $fd = $ret >= 0 ? $ret : -1;
+
+        printf("%s::", strftime("[%Y-%m-%d %H:%M:%S.%f]", nsecs));
+        printf("%s[PID=%d]::open(\"%s\")->%d\n", comm, pid, str(@filename[tid]), $fd);
+    }
+}
+
+// [<datetime>]::<program>[PID=<pid>]::read(<fd>)
+tracepoint:syscalls:sys_enter_read
+{
+    if (comm != "bpftrace" && comm != "code"){
+        printf("%s::", strftime("[%Y-%m-%d %H:%M:%S.%f]", nsecs));
+        printf("%s[PID=%d]::read(%d)\n", comm, pid, args->fd);
+    }
+}
+
+// [<datetime>]::<program>[PID=<pid>]::write(<fd>)
+tracepoint:syscalls:sys_enter_write
+{
+    if (comm != "bpftrace" && comm != "code"){
+        printf("%s::", strftime("[%Y-%m-%d %H:%M:%S.%f]", nsecs));
+        printf("%s[PID=%d]::write(%d)\n", comm, pid, args->fd);
+    }
+}
+
+// [<datetime>]::<program>[PID=<pid>]::close("<filename>")
+tracepoint:syscalls:sys_enter_close
+{
+    if (comm != "bpftrace" && comm != "code"){
+        printf("%s::", strftime("[%Y-%m-%d %H:%M:%S.%f]", nsecs));
+        printf("%s[PID=%d]::close(%d)\n", comm, pid, args->fd);
+    }
+}
+
+// [<datetime>]::<program>[PID=<pid>]::fork(<child_pid>)
+tracepoint:sched:sched_process_fork
+{
+    if (comm != "bpftrace" && comm != "code"){
+        printf("%s::", strftime("[%Y-%m-%d %H:%M:%S.%f]", nsecs));
+        printf("%s[PID=%d]::fork(%d)\n", comm, pid, args->child_pid);
+    }
+}
+
+// [<datetime>]::<program>[PID=<pid>]::tcp(<src>, <dst>)
+kprobe:tcp_connect
+{
+    if (comm != "bpftrace" && comm != "code"){
+        $sk = ((struct sock *) arg0);
+        $inet_family = $sk->__sk_common.skc_family;
+
+        if ($inet_family == AF_INET || $inet_family == AF_INET6) {
+            if ($inet_family == AF_INET) {
+            $daddr = ntop($sk->__sk_common.skc_daddr);
+            $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+            } else {
+            $daddr = ntop($sk->__sk_common.skc_v6_daddr.in6_u.u6_addr8);
+            $saddr = ntop($sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+            }
+            $lport = $sk->__sk_common.skc_num;
+            $dport = $sk->__sk_common.skc_dport;
+
+            // Destination port is big endian, it must be flipped
+            $dport = (($dport >> 8) & 0xFF) | (($dport & 0xFF) << 8);
+
+            printf("%s::", strftime("[%Y-%m-%d %H:%M:%S.%f]", nsecs));
+            printf("%s[PID=%d]::tcp(\"%s:%d\", \"%s:%d\")\n", comm, pid, $saddr, $lport, $daddr, $dport);
+        }
+    }
+}
